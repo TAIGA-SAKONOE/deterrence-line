@@ -17,6 +17,14 @@ function phaseTone(game: GameState): string {
   }
 }
 
+function allyStageText(stage: number): string {
+  if (stage >= 5) return "共同作戦・直接介入の検討段階";
+  if (stage === 4) return "展開・プレゼンス強化";
+  if (stage === 3) return "後方支援・補給協力";
+  if (stage === 2) return "共同声明・外交的支持";
+  return "情報共有・認識合わせ";
+}
+
 export function NscScreen({ game, setGame }: { game: GameState; setGame: (game: GameState) => void }) {
   const latestTransition = game.situationHistory.phaseTransitions.at(-1);
 
@@ -33,10 +41,12 @@ export function NscScreen({ game, setGame }: { game: GameState; setGame: (game: 
           ) : null}
         </div>
         <div className="space-y-3 font-serif leading-8">
-          <p><b>防衛省：</b> C地域周辺の相手国展開艦艇は推定{game.metrics.opponentDeployedShips}隻。現地制御度は{game.metrics.localControl}。</p>
-          <p><b>外務省：</b> 相手国中央政府は通常訓練との説明を維持。外交チャンネルの開閉状況は断片的に確認されている。</p>
+          <p><b>防衛省：</b> C地域周辺の相手国展開艦艇は推定{game.metrics.opponentDeployedShips}隻。現地制御度は{game.metrics.localControl}。前線緊張指数は{game.worldState.frontlineTension}。</p>
+          <p><b>外務省：</b> 外交的開口度は{game.worldState.diplomaticOpening}。相手国中央政府は公式説明を維持しているが、非公式接触の余地は変動している。</p>
+          <p><b>同盟国連絡班：</b> 関与段階は「{allyStageText(game.allyEngagementStage)}」。議会制約と経済負担により、関与速度には限界がある。</p>
           <p><b>財務省：</b> 株価前日比{game.metrics.stockChangePct}%、10年国債金利{game.metrics.bondYield10y}%、緊急予算残{game.metrics.emergencyBudget}億円。</p>
           <p><b>経産省：</b> 燃料備蓄{game.metrics.fuelReserveDays}日、物流遅延率{game.metrics.shippingDelayPct}%。</p>
+          <p><b>情報機関：</b> 相手国の意図は断定困難。ただし前線統制度と国内圧力の連動が観測される。確度：中。</p>
         </div>
       </Panel>
       <Button onClick={() => setGame(goToStep(game, "work"))}>執務室へ戻る</Button>
