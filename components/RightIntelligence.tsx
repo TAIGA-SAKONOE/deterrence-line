@@ -18,7 +18,19 @@ export function RightIntelligence({ game }: { game: GameState }) {
       ) : null}
 
       <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
-        <div className="text-xs font-bold text-slate-500">現在の断片情報</div>
+        <div className="text-xs font-bold text-slate-500">WorldState 観測断片</div>
+        <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-700">
+          <div>軍事均衡：{game.worldState.militaryBalance}</div>
+          <div>前線緊張：{game.worldState.frontlineTension}</div>
+          <div>外交開口：{game.worldState.diplomaticOpening}</div>
+          <div>同盟結束：{game.worldState.allianceSolidity}</div>
+          <div>情報主導：{game.worldState.narrativeControl}</div>
+          <div>切迫度：{game.worldState.urgency}</div>
+        </div>
+      </div>
+
+      <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+        <div className="text-xs font-bold text-slate-500">断片情報</div>
         <p className="mt-2 text-sm leading-6 text-slate-800">{game.hidden.opponentMessage}</p>
         <p className="mt-2 text-sm leading-6 text-slate-800">{game.hidden.allyMessage}</p>
         <div className="mt-3 flex flex-wrap gap-1">
@@ -38,6 +50,11 @@ export function RightIntelligence({ game }: { game: GameState }) {
               <div className="mt-2 font-serif text-slate-800">{log.reaction}</div>
               {log.event ? <div className="mt-2 rounded bg-red-50 p-2 text-xs font-bold text-red-900">{log.event}</div> : null}
               <div className="mt-2 text-xs text-slate-500">{log.defenseInstituteNote}</div>
+              {log.causalLinks.length > 0 ? (
+                <ul className="mt-2 list-disc pl-4 text-xs text-slate-500">
+                  {log.causalLinks.map((link) => <li key={link}>{link}</li>)}
+                </ul>
+              ) : null}
             </article>
           ))
         )}
