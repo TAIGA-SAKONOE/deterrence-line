@@ -1,8 +1,9 @@
-import type { Effect, GameState, RoutineStep } from "./gameTypes";
+import type { CrisisTag, Effect, GameState, RoutineStep } from "./gameTypes";
 import {
   applyEffect,
   applyPressureEffect,
   calculateCriticalityScore,
+  clamp,
   combineEffects,
   combinePressureEffects,
   sumFiscalCost,
@@ -11,6 +12,8 @@ import {
 import { policyClauses } from "../data/policyClauses";
 import { pressClauses } from "../data/pressClauses";
 import { situationDrift } from "./situationEngine";
+import { calculateWorldState, worldSummary } from "./worldEngine";
+import { runNpcTurn } from "./npcEngine";
 
 export function goToStep(game: GameState, step: RoutineStep): GameState {
   return { ...game, step };
@@ -36,7 +39,15 @@ function politicalCapitalRecovery(game: GameState): number {
   const difficultyBase = game.difficulty === "easy" ? 4 : game.difficulty === "hard" ? 2 : 3;
   const phaseModifier = game.phase === "stalemate" ? -1 : game.phase === "turning" ? 1 : 0;
   const situationModifier =
-    game.situationPhase === "latent" ? 1 : game.situationPhase === "critical" ? -2 : game.situationPhase === "crystallizing" ? -1 : game.situationPhase === "dissolving" ? 1 : 0;
+    game.situationPhase === "latent"
+      ? 1
+      : game.situationPhase === "critical"
+        ? -2
+        : game.situationPhase === "crystallizing"
+          ? -1
+          : game.situationPhase === "dissolving"
+            ? 1
+            : 0;
   return difficultyBase + phaseModifier + situationModifier;
 }
 
@@ -69,11 +80,11 @@ function objectiveFitEffect(game: GameState, policyEffect: Effect): Effect {
   return {};
 }
 
-function updateHiddenTags(game: GameState, add: string[], remove: string[]) {
+function updateHiddenTags(game: GameState, add: CrisisTag[], remove: CrisisTag[]) {
   const tags = new Set(game.hidden.tags);
-  remove.forEach((tag) => tags.delete(tag as never));
-  add.forEach((tag) => tags.add(tag as never));
-  return { ...game.hidden, tags: Array.from(tags) as typeof game.hidden.tags };
+  remove.forEach((tag) => tags.delete(tag));
+  add.forEach((tag) => tags.add(tag));
+  return { ...game.hidden, tags: Array.from(tags) };
 }
 
 function endingIdIfAny(game: GameState): string | null {
@@ -81,6 +92,10 @@ function endingIdIfAny(game: GameState): string | null {
   if (game.metrics.politicalCapital <= 0 && game.metrics.pmTrust < 40) return "cabinet_collapse";
   if (game.day >= 20) return "provisional_success";
   return null;
+}
+
+function clampNpcState(value: number): number {
+  return clamp(Math.round(value), 0, 100);
 }
 
 export function resolveDay(game: GameState): GameState {
@@ -95,7 +110,7 @@ export function resolveDay(game: GameState): GameState {
 
   const drift = situationDrift(game);
 
-  const allEffects = combineEffects([
+  const baseEffects = combineEffects([
     policyEffect,
     pressEffect,
     drift.effect,
@@ -107,18 +122,67 @@ export function resolveDay(game: GameState): GameState {
     },
   ]);
 
-  let nextMetrics = applyEffect(game.metrics, allEffects);
+  let nextMetrics = applyEffect(game.metrics, baseEffects);
   const cap = politicalCapitalCap({ ...game, metrics: nextMetrics });
-  if (nextMetrics.politicalCapital > cap) {
-    nextMetrics = { ...nextMetrics, politicalCapital: cap };
-  }
+  if (nextMetrics.politicalCapital > cap) nextMetrics = { ...nextMetrics, politicalCapital: cap };
 
-  const pressureAfterPolicy = applyPressureEffect(game.situationPressure, pressureEffect);
-  const nextPressure = applyPressureEffect(pressureAfterPolicy, drift.pressureChanges);
-
+  let nextPressure = applyPressureEffect(applyPressureEffect(game.situationPressure, pressureEffect), drift.pressureChanges);
   const nextPhase = drift.nextPhaseState;
-  const nextHidden = updateHiddenTags(game, drift.tagChanges.add, drift.tagChanges.remove);
+  let nextHidden = updateHiddenTags(game, drift.tagChanges.add, drift.tagChanges.remove);
+
+  const preliminaryCriticality = calculateCriticalityScore(nextMetrics, nextPressure);
+  const preliminaryState: GameState = {
+    ...game,
+    metrics: nextMetrics,
+    situationPressure: nextPressure,
+    situationPhase: nextPhase,
+    hidden: nextHidden,
+    criticalityScore: preliminaryCriticality,
+  };
+  const preliminaryWorld = calculateWorldState(preliminaryState);
+  const npc = runNpcTurn({ ...preliminaryState, worldState: preliminaryWorld }, selectedPolicies);
+
+  nextMetrics = applyEffect(nextMetrics, combineEffects([npc.effect, npc.allyEffect]));
+  nextPressure = applyPressureEffect(applyPressureEffect(nextPressure, npc.pressureEffect), npc.allyPressureEffect);
   const nextCriticality = calculateCriticalityScore(nextMetrics, nextPressure);
+
+  const nextOpponent = {
+    ...game.opponent,
+    domesticPressure: clampNpcState(game.opponent.domesticPressure + npc.opponentDelta.domesticPressure),
+    frontlineControl: clampNpcState(game.opponent.frontlineControl + npc.opponentDelta.frontlineControl),
+    escalationWill: clampNpcState(game.opponent.escalationWill + npc.opponentDelta.escalationWill),
+    selectedPolicyIds: npc.opponentDelta.selectedPolicyIds,
+  };
+
+  const nextAllies = game.allies.map((ally, index) => {
+    if (index !== 0) return ally;
+    return {
+      ...ally,
+      selectedPolicyIds: npc.allyEngagementStage > game.allyEngagementStage ? [`ally_stage_${npc.allyEngagementStage}`] : [],
+      parliamentConstraint: clampNpcState(
+        ally.parliamentConstraint +
+          (selectedPolicies.filter((p) => p.category === "軍事").length >= 1 ? 2 : 0) -
+          (npc.allyEngagementStage > game.allyEngagementStage ? 2 : 0),
+      ),
+    };
+  });
+
+  const finalWorld = calculateWorldState({
+    ...preliminaryState,
+    metrics: nextMetrics,
+    situationPressure: nextPressure,
+    situationPhase: nextPhase,
+    opponent: nextOpponent,
+    allies: nextAllies,
+    allyEngagementStage: npc.allyEngagementStage,
+    criticalityScore: nextCriticality,
+  });
+
+  nextHidden = {
+    ...nextHidden,
+    opponentMessage: npc.opponentMessage,
+    allyMessage: npc.allyMessage,
+  };
 
   const nextLogs = [
     ...game.logs,
@@ -128,21 +192,27 @@ export function resolveDay(game: GameState): GameState {
       submission: selectedPolicies.map((p) => p.phrase).join("。") || "上申なし",
       cabinet: "閣議は省益上の留保を残しつつ、官房長官案を了承した。",
       press: selectedPress.map((p) => p.phrase).join("。") || "会見での追加説明なし",
-      reaction: drift.report,
+      reaction: `${drift.report} ${worldSummary(finalWorld)} ${npc.opponentMessage} ${npc.allyMessage}`,
       event: drift.transitionOccurred ? `事態相転移：${drift.transitionTrigger}` : undefined,
       phase: game.phase,
       situationPhaseAtDay: nextPhase,
       situationPressureAtDay: nextPressure,
       phaseTransitionOccurred: drift.transitionOccurred,
       phaseTransitionDetail: drift.transitionTrigger,
-      defenseInstituteNote: "政策効果、会見効果、事態固有のドリフトが合成され、翌日の政治・軍事環境を形成した。",
+      defenseInstituteNote: "プレイヤーの上申、会見、事態固有の自律運動、相手国・同盟国NPCの判断が合成され、翌日の政治・軍事環境を形成した。",
       causalLinks: [
         `政策句 ${selectedPolicies.length}件、会見句 ${selectedPress.length}件を処理。`,
         `政治資本 ${-politicalCost}+回復、緊急予算 -${fiscalCost}億円。`,
+        `相手国NPC行動：${npc.opponentAction}`,
+        `同盟国関与段階：${game.allyEngagementStage} → ${npc.allyEngagementStage}`,
         drift.report,
       ],
       hiddenStateAtDay: {
-        opponent: { strategy: game.opponent.strategy, frontlineControl: game.opponent.frontlineControl },
+        opponent: {
+          strategy: nextOpponent.strategy,
+          frontlineControl: nextOpponent.frontlineControl,
+          escalationWill: nextOpponent.escalationWill,
+        },
         situationPhase: nextPhase,
         pressure: nextPressure,
       },
@@ -172,22 +242,18 @@ export function resolveDay(game: GameState): GameState {
       pressureHistory: [...game.situationHistory.pressureHistory, { day: game.day + 1, pressure: nextPressure }],
     },
     hidden: nextHidden,
-    worldState: {
-      ...game.worldState,
-      frontlineTension: nextPressure.militaryPressure,
-      escalationMomentum: nextMetrics.escalationRisk,
-      diplomaticOpening: nextMetrics.peaceWindow,
-      allianceSolidity: nextMetrics.allyCredit,
-      situationPhase: nextPhase,
-      situationPressure: nextPressure,
-      urgency: nextCriticality,
-    },
+    worldState: finalWorld,
+    opponent: nextOpponent,
+    opponentObservation: npc.opponentObservation,
+    opponentAssessment: npc.opponentAssessment,
+    allies: nextAllies,
+    allyObservation: npc.allyObservation,
+    allyAssessment: npc.allyAssessment,
+    allyEngagementStage: npc.allyEngagementStage,
     criticalityScore: nextCriticality,
   };
 
   const endingId = endingIdIfAny(withNext);
-  if (endingId) {
-    return { ...withNext, ended: true, endingId, step: "end" };
-  }
+  if (endingId) return { ...withNext, ended: true, endingId, step: "end" };
   return withNext;
 }
